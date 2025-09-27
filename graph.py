@@ -167,7 +167,7 @@ or if you can answer the question directly.
 
 - Answer the question directly only for simple conversational queries, such as "How are you?" or "What's your name?". Also if you can answer the question directly.
 
-- If you will answer then use memory to personalize your response based on memory. Use personalization especially in:
+- If you will answer then use **Memory** to personalize your response based on memory. Use personalization especially in:
     * Greetings and transitions
     * Help or guidance tailored to tools and frameworks the user uses
     * Follow-up messages that continue from past context
@@ -176,9 +176,16 @@ or if you can answer the question directly.
 
 """
 
-
-
 def decision_node(state: AgentState, config: RunnableConfig, store: MongoDBStore):
+    
+    state["output_img"] = ""  
+    state["requires_output_img"] = False
+    state["rag_context"] = ""
+    state["research_answer"] = ""
+    state["planned"] = []
+    state["requires_add_data"] = False
+
+
     # --- 1. Kullanıcı memory'sini MongoDB'den al ---
     configurable = configuration.Configuration.from_runnable_config(config)
 
@@ -192,7 +199,7 @@ def decision_node(state: AgentState, config: RunnableConfig, store: MongoDBStore
     # --- 2. LLM payload'u oluştur ---
     current_messages = state["messages"]   # liste olarak al
     last_user_message = current_messages[-1]   # son mesaj
-    input_img = load_image(state.get("input_img"))
+    input_img = load_image(state.get("input_img", None))
 
     # Memory'yi prompt içine ekle
     prompt_with_memory = decision_making_prompt.format(memory=existing_memory_content)
@@ -231,13 +238,15 @@ def decision_node(state: AgentState, config: RunnableConfig, store: MongoDBStore
     decision_llm = llm.with_structured_output(DecisionOutput)
     response: DecisionOutput = decision_llm.invoke(llm_payload)
 
-    # --- 5. State çıktısını döndür ---
     if response.answer:
-        return {"final_answer": response.answer, "requires_agent": False, "input_img": input_img}
-    else:
-        return {"requires_agent": response.requires_agent, "input_img": input_img}
-
-
+        state["final_answer"] = response.answer
+    state["requires_agent"] = response.requires_agent
+    state["input_img"] = input_img
+    print("######################")
+    print(state["input_img"])
+    print("######################")
+    return state
+########################################################################
 
 
  #### Decision Router
@@ -319,7 +328,7 @@ def planner_node(state: AgentState):
 
     system_prompt = SystemMessage(content=planner_prompt)
 
-    response : PlannerState = planner_llm.invoke([system_prompt, state["messages"][-1]])
+    response : PlannerState = planner_llm.invoke([system_prompt, state["messages"][-1].content])
 
     if response.requires_add_data:
 
@@ -327,7 +336,7 @@ def planner_node(state: AgentState):
 
         system_prompt = SystemMessage(content=adding_prompt)
 
-        response_add : AddingData = adding_llm.invoke([system_prompt, state["messages"][-1]])
+        response_add : AddingData = adding_llm.invoke([system_prompt, state["messages"][-1].content])
         print(f"New Data:{response_add.data_to_add}")
         
         if response.img_is_available:
@@ -378,7 +387,7 @@ User original input (raw): {original_query}
 
 def rewriting_node(state: AgentState):
     # Kullanıcının son mesajını al
-    original_query = state["messages"][-1]
+    original_query = state["messages"][-1].content
     
     # Prompt'u doldur
     prompt = query_rewrite_prompt.format(original_query=original_query)
@@ -388,7 +397,7 @@ def rewriting_node(state: AgentState):
     # LLM'e gönder
     response = rewriting_llm.invoke(prompt)
     
-    if response.hyde_document:
+    if response and response.hyde_document:
         result = response.hyde_document
     else:
         result= response.query
@@ -402,20 +411,26 @@ def rag_query(state: AgentState):
     # Kullanıcının son mesajını al
     original_query = state["query"]
     # Görsel açıklaması varsa, arama yap
+
+        
     if state["requires_output_img"]:
-        if state["input_img"] is not None:
+        if state.get("input_img", ""):
             results = vector_search_text_img(original_query, state["input_img"], k=1)
+            print("Text and image search with output image...")
             return {"rag_context": results[0].page_content, "output_img": results[0].metadata["link"]}
         else:
             results = rag_system.similarity_search_with_score(original_query, k=1)
+            print("Text search with output image...")
             return {"rag_context": results[0][0].page_content, "output_img": results[0][0].metadata["link"]}
 
     else:
-        if state["input_img"] is not None:
+        if state.get("input_img", ""):
             results = vector_search_text_img(original_query, state["input_img"], k=1)
+            print("Just text and image search ...")
             return {"rag_context": results[0].page_content}
         else:
             results = rag_system.similarity_search_with_score(original_query, k=1)
+            print("Just text search ...")
             return {"rag_context": results[0][0].page_content}        
 
 
@@ -424,7 +439,7 @@ def rag_query(state: AgentState):
 
 
 def researcher_node(state: AgentState):
-    original_query = state["messages"][-1]
+    original_query = state["messages"][-1].content
     
     tools = [DuckDuckGoSearchRun()]
 
@@ -437,8 +452,6 @@ def researcher_node(state: AgentState):
         agent_kwargs={
             "prefix": (
                 "You are a research assistant. "
-                "Your task is to analyze the user query and ONLY research the parts "
-                "that explicitly require external knowledge. "
                 "Ignore irrelevant or non-researchable parts of the query. "
                 "Provide a clear and concise answer only for the researched part."
                 "If need tools you can use duckduckgo for web search."
@@ -489,7 +502,6 @@ Using the user's input, formulate your response based on the provided 'context' 
 **Memory(it may be empty):**
 {memory}
 
-
 If you have memory for this user, use it to personalize your responses. Use personalization especially in:
     * Greetings and transitions
     * Help or guidance tailored to tools and frameworks the user uses
@@ -515,7 +527,7 @@ def generate_answer(state: AgentState, config: RunnableConfig, store: MongoDBSto
 
     # --- 3. Format ---
     prompt = prompt_template.format_messages(
-        user_input=state["messages"][-1],
+        user_input=state["messages"][-1].content,
         context=state.get("rag_context", ""),
         researcher_answer=state.get("research_answer", ""),
         requires_output_img=requires_output_img,
@@ -526,6 +538,10 @@ def generate_answer(state: AgentState, config: RunnableConfig, store: MongoDBSto
     response = llm.invoke(prompt)
 
     return {"final_answer": response.content, "output_img": state.get("output_img", "")}
+
+
+class MemoryState(BaseModel):
+    memory: str = Field(description="User profile information collected from chat history")
 
 
 create_memory_prompt = """"You are collecting information about the user to personalize your responses.
@@ -546,8 +562,12 @@ INSTRUCTIONS:
 5. If new information conflicts with existing memory, keep the most recent version
 
 Remember: Only include factual information directly stated by the user. Do not make assumptions or inferences.
-Important: Do NOT include summaries like "no update needed".
-Based on the chat history below, please update the user information:"""
+Important: Do NOT include summaries like "no update needed". Dont add your command.
+If no new data is available in chat history below, return the user information unmodified. Like this:
+{memory}
+
+Update the user information based on the chat history below, maintaining the original structure:
+"""
 
 def write_memory(state: AgentState, config: RunnableConfig, store: MongoDBStore):
 
@@ -560,8 +580,11 @@ def write_memory(state: AgentState, config: RunnableConfig, store: MongoDBStore)
     existing_memory = store.get(namespace, key)
     existing_memory_content = existing_memory.value.get('memory') if existing_memory else "No existing memory found."
     system_msg = create_memory_prompt.format(memory=existing_memory_content)
-    new_memory = llm.invoke([SystemMessage(content=system_msg)] + state["messages"])
-    store.put(namespace, key, {"memory": new_memory.content})
+
+    memory_llm: MemoryState = llm.with_structured_output(MemoryState)
+
+    new_memory = memory_llm.invoke([SystemMessage(content=system_msg)] + state["messages"])
+    store.put(namespace, key, {"memory": new_memory.memory})
 
 
 

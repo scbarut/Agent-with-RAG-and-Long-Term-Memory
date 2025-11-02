@@ -15,7 +15,7 @@ This project implements a sophisticated, stateful AI agent that combines a multi
 ## 🛠️ Tech Stack
 
 - **Orchestration**: LangChain & LangGraph
-- **LLM**: Google Gemini 1.5 Flash (`gemini-1.5-flash`)
+- **LLM**: Google Gemini 2.0 Flash (`gemini-2.0-flash`)
 - **Database (Long-Term Memory)**: MongoDB
 - **Vector Store**: FAISS (Facebook AI Similarity Search)
 - **Embedding Model**: `google/embeddinggemma-300m`

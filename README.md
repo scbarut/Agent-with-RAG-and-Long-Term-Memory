@@ -47,9 +47,41 @@ The core of this agent is its powerful RAG system, designed to provide informati
 
 ## 📂 Project Structure
 
-- `graph.py`: Defines the main agentic workflow using `LangGraph`. It contains all the nodes (decision, planner, RAG, researcher) and the edges that connect them, forming the brain of the operation.
-- `rag_system.py`: A self-contained class that manages the entire RAG pipeline. This includes loading data, initializing models, creating/loading the FAISS vector store, and providing methods for adding new data and performing similarity searches.
-- `configuration.py`: A simple dataclass for managing configuration settings, such as the `user_id`, which is used to partition memory in the MongoDB store.
+```
+Agent-with-RAG-and-Long-Term-Memory/
+│
+├── agent/                          # Core package
+│   ├── configuration.py            # Configuration dataclass (user_id, etc.)
+│   ├── state.py                    # AgentState TypedDict shared across all nodes
+│   ├── llm.py                      # Shared LLM singleton (Gemini 2.0 Flash)
+│   ├── memory_store.py             # MongoDB + MemorySaver setup & helpers
+│   │
+│   ├── utils/
+│   │   └── image.py                # load_image helper (URL / path / PIL)
+│   │
+│   ├── rag/
+│   │   ├── __init__.py             # Instantiates the shared RagSystem singleton
+│   │   └── system.py               # RagSystem class — FAISS + BLIP pipeline
+│   │
+│   └── nodes/                      # One module per graph node
+│       ├── decision.py             # decision_node · decision_router
+│       ├── planner.py              # planner_node
+│       ├── rewriting.py            # rewriting_node (HyDE query rewriting)
+│       ├── rag_query.py            # rag_query node
+│       ├── researcher.py           # researcher_node (DuckDuckGo)
+│       ├── answer.py               # generate_answer node
+│       ├── memory.py               # write_memory node
+│       └── router.py               # Shared routing function
+│
+├── graph.py                        # Thin entrypoint — assembles & compiles the graph
+├── configuration.py                # Backward-compat shim → agent.configuration
+├── rag_system.py                   # Backward-compat shim → agent.rag.system
+│
+├── langchain_faiss_index/          # Persisted FAISS vector index
+├── langgraph.json                  # LangGraph server config
+├── .env.example                    # Environment variable template
+└── requirements.txt                # Python dependencies
+```
 
 ## 🌊 Workflow
 
@@ -59,17 +91,17 @@ The core of this agent is its powerful RAG system, designed to provide informati
 
 The `AgentState` class is a `TypedDict` that defines the state of the agent at any given time. It is used to pass information between the different nodes in the graph.
 
-- **messages**: A sequence of `BaseMessage` objects that represent the chat history.
-- **requires_agent**: A boolean that indicates whether the query requires an agent to answer.
-- **requires_add_data**: A boolean that indicates whether the user wants to add data to the RAG system.
-- **input_img**: A string that contains the path to the input image.
-- **output_img**: A string that contains the path to the output image.
-- **requires_output_img**: A boolean that indicates whether the user has requested an image as output.
-- **rag_context**: A string that contains the context retrieved from the RAG system.
-- **research_answer**: A string that contains the answer from the researcher agent.
-- **final_answer**: A string that contains the final answer to be returned to the user.
-- **planned**: A list of strings that contains the planned agents to be executed.
-- **query**: A string that contains the query for RAG.
+- **messages**: Append-only sequence of `BaseMessage` objects representing the conversation history.
+- **requires_agent**: `True` if the query needs the agent pipeline; `False` for direct answers.
+- **requires_add_data**: `True` if the user wants to add new data to the RAG system.
+- **input_img**: Accepts a URL or local file path on entry; converted to a `PIL.Image` by `decision_node` for downstream use.
+- **output_img**: URL or path of the product image returned by the RAG system (if applicable).
+- **requires_output_img**: `True` if the user explicitly requested a visual output.
+- **rag_context**: Text context retrieved from the FAISS vector store.
+- **research_answer**: Answer produced by the `researcher_node` via web search.
+- **final_answer**: The final response delivered to the user.
+- **planned**: Queue of sub-agent names still to be executed (e.g. `["Researcher Agent", "RAG Query Agent"]`).
+- **query**: The rewritten / HyDE-expanded query sent to the RAG vector store.
 
 ## 🚀 How to Run
 
